@@ -8,6 +8,7 @@ import os
 
 from models.PathModel import PathModel
 from views.EditView import EditView
+from views.AllocationView import AllocationView
 
 import json
 from models.TankModel import TankModel
@@ -78,6 +79,10 @@ class MainView(tk.Frame):
 
 
         self.create_widgets()
+
+        self.eca_result_label.config(text="ECA consumption: 0.0 t (0.0 m³)")
+        self.non_eca_result_label.config(text="Non ECA consumption: 0.0 t (0.0 m³)")
+        self.update_order_labels(0.0, 0.0)
 
         self.pack()
 
@@ -184,10 +189,17 @@ class MainView(tk.Frame):
         self.order_warn_label = ttk.Label(self.result_frame, text="")
         self.order_warn_label.pack(pady=(6, 0))
 
+        self.allocate_button = ttk.Button(
+            self.spinbox_frame, text="Allocate", state=tk.DISABLED,
+            command=lambda: self.allocation_view_open()
+        )
+        self.allocate_button.grid(row=0, column=4, padx=(8, 0))
+
 
     def update_segments(self):
         self.clear_input()
         self.disable_input()
+        self.allocate_button.config(state=tk.DISABLED)
 
         current_len = len(self.path_segments)
         new_len = self.path_amount_var.get()
@@ -251,10 +263,14 @@ class MainView(tk.Frame):
             elif not i.is_eca:
                 non_eca_sum += i.consumption
 
-        self.eca_result_label.config(text=f"ECA consumption: {eca_sum}")
-        self.non_eca_result_label.config(text=f"Non ECA consumption: {non_eca_sum}")
+        eca_m3 = round(eca_sum / self.eca_density, 3) if self.eca_density > 0 else 0.0
+        non_m3 = round(non_eca_sum / self.non_eca_density, 3) if self.non_eca_density > 0 else 0.0
+
+        self.eca_result_label.config(text=f"ECA consumption: {round(eca_sum, 2)} t ({eca_m3} m³)")
+        self.non_eca_result_label.config(text=f"Non ECA consumption: {round(non_eca_sum, 2)} t ({non_m3} m³)")
 
         self.update_order_labels(eca_sum, non_eca_sum)
+        self.allocate_button.config(state=tk.ACTIVE)
 
 
     def recalculate_consumption(self):
@@ -282,6 +298,7 @@ class MainView(tk.Frame):
         self.non_eca_result_label.config(text=f"Non ECA consumption: {non_eca_sum}")
 
         self.update_order_labels(eca_sum, non_eca_sum)
+        self.allocate_button.config(state=tk.ACTIVE)
 
 
     def activate_input(self):
@@ -437,12 +454,13 @@ class MainView(tk.Frame):
         )
 
     def update_order_labels_from_current_results(self):
-        # Парсим текущие значения с лейблов (если уже были посчитаны)
         try:
-            eca_txt = self.eca_result_label.cget("text").split(":")[1].strip()
-            non_txt = self.non_eca_result_label.cget("text").split(":")[1].strip()
-            eca_sum = float(eca_txt)
-            non_sum = float(non_txt)
+            # "ECA consumption: 12.5 t (12.626 m³)"
+            eca_part = self.eca_result_label.cget("text").split(":")[1].strip()
+            non_part = self.non_eca_result_label.cget("text").split(":")[1].strip()
+
+            eca_sum = float(eca_part.split("t")[0].strip())
+            non_sum = float(non_part.split("t")[0].strip())
         except Exception:
             eca_sum = 0.0
             non_sum = 0.0
@@ -466,3 +484,53 @@ class MainView(tk.Frame):
 
     def tanks_view_open(self):
         TanksView(self)
+
+    def allocate_consumption_sequential(self, tanks, consumption_t, density):
+        """
+        tanks: список TankModel (уже отфильтрованные активные) в нужном порядке
+        consumption_t: расход в тоннах
+        density: t/m3
+        Возвращает:
+          per_tank: list of dict {tank, used_m3, used_t, remaining_m3}
+          deficit_m3, deficit_t
+        """
+        density = float(density) if float(density) > 0 else 1.0
+        remaining_need_m3 = float(consumption_t) / density
+
+        per_tank = []
+        for t in tanks:
+            cur = max(0.0, float(t.current_m3))
+            used_m3 = min(cur, remaining_need_m3)
+            remaining_need_m3 -= used_m3
+
+            used_t = used_m3 * density
+            remaining_m3 = cur - used_m3
+
+            per_tank.append({
+                "tank": t,
+                "used_m3": round(used_m3, 3),
+                "used_t": round(used_t, 2),
+                "remaining_m3": round(remaining_m3, 3),
+            })
+
+            if remaining_need_m3 <= 1e-12:
+                remaining_need_m3 = 0.0
+                break
+
+        deficit_m3 = max(0.0, remaining_need_m3)
+        deficit_t = deficit_m3 * density
+
+        return per_tank, round(deficit_m3, 3), round(deficit_t, 2)
+
+    def allocation_view_open(self):
+        try:
+            eca_part = self.eca_result_label.cget("text").split(":")[1].strip()
+            non_part = self.non_eca_result_label.cget("text").split(":")[1].strip()
+
+            eca_sum = float(eca_part.split("t")[0].strip())
+            non_sum = float(non_part.split("t")[0].strip())
+        except Exception:
+            eca_sum = 0.0
+            non_sum = 0.0
+
+        AllocationView(self, eca_sum, non_sum)

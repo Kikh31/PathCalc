@@ -9,6 +9,10 @@ import os
 from models.PathModel import PathModel
 from views.EditView import EditView
 
+import json
+from models.TankModel import TankModel
+from views.TanksView import TanksView
+
 
 def resource_path(relative_path):
     """ Получает путь к ресурсу в запакованном приложении или в обычной директории """
@@ -66,6 +70,13 @@ class MainView(tk.Frame):
         self.non_eca_table = load_table('non_eca_table.csv')
         self.eca_table = load_table('eca_table.csv')
 
+        self.eca_density = 1.0
+        self.non_eca_density = 1.0
+        self.eca_tanks = []
+        self.non_eca_tanks = []
+        self.load_tanks_data()
+
+
         self.create_widgets()
 
         self.pack()
@@ -93,6 +104,10 @@ class MainView(tk.Frame):
         self.edit_table_button = ttk.Button(self.spinbox_frame, text="Изменить таблицы",
                                             command=self.edit_view_open)
         self.edit_table_button.grid(row=0, column=2)
+
+        self.tanks_button = ttk.Button(self.spinbox_frame, text="Tanks", command=self.tanks_view_open)
+        self.tanks_button.grid(row=0, column=3, padx=(8, 0))
+
 
         # Table Frame
         self.tree_frame = ttk.Frame(self.main_frame)
@@ -159,6 +174,16 @@ class MainView(tk.Frame):
 
         self.non_eca_result_label = ttk.Label(self.result_frame, text="Non ECA consumption: 0.0")
         self.non_eca_result_label.pack()
+
+        self.eca_order_label = ttk.Label(self.result_frame, text="ECA order to fill: 0 t (0 m³)")
+        self.eca_order_label.pack(pady=(10, 0))
+
+        self.non_eca_order_label = ttk.Label(self.result_frame, text="Non-ECA order to fill: 0 t (0 m³)")
+        self.non_eca_order_label.pack()
+
+        self.order_warn_label = ttk.Label(self.result_frame, text="")
+        self.order_warn_label.pack(pady=(6, 0))
+
 
     def update_segments(self):
         self.clear_input()
@@ -229,6 +254,9 @@ class MainView(tk.Frame):
         self.eca_result_label.config(text=f"ECA consumption: {eca_sum}")
         self.non_eca_result_label.config(text=f"Non ECA consumption: {non_eca_sum}")
 
+        self.update_order_labels(eca_sum, non_eca_sum)
+
+
     def recalculate_consumption(self):
         for i in self.path_segments:
             i.consumption = self.calculate_consumption(
@@ -252,6 +280,9 @@ class MainView(tk.Frame):
 
         self.eca_result_label.config(text=f"ECA consumption: {eca_sum}")
         self.non_eca_result_label.config(text=f"Non ECA consumption: {non_eca_sum}")
+
+        self.update_order_labels(eca_sum, non_eca_sum)
+
 
     def activate_input(self):
         self.dist_entry.config(state=tk.ACTIVE)
@@ -312,5 +343,126 @@ class MainView(tk.Frame):
             for row in table:
                 writer.writerow([float(row[0]), float(row[1]), float(row[2])])
 
+    def tanks_data_path(self):
+        app_support_path = get_application_support_path()
+        return os.path.join(app_support_path, "tanks_data.json")
+
+    def load_tanks_data(self):
+        path = self.tanks_data_path()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.eca_density = float(data.get("eca_density", 1.0))
+            self.non_eca_density = float(data.get("non_eca_density", 1.0))
+
+            self.eca_tanks = [TankModel.from_dict(x) for x in data.get("eca_tanks", [])]
+            self.non_eca_tanks = [TankModel.from_dict(x) for x in data.get("non_eca_tanks", [])]
+        except Exception:
+            # Если файл битый — просто стартуем с дефолтами
+            self.eca_density = 1.0
+            self.non_eca_density = 1.0
+            self.eca_tanks = []
+            self.non_eca_tanks = []
+
+    def save_tanks_data(self):
+        data = {
+            "eca_density": float(self.eca_density),
+            "non_eca_density": float(self.non_eca_density),
+            "eca_tanks": [t.to_dict() for t in self.eca_tanks],
+            "non_eca_tanks": [t.to_dict() for t in self.non_eca_tanks],
+        }
+        with open(self.tanks_data_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _active_totals_m3(self, tanks):
+        total_current = 0.0
+        total_capacity = 0.0
+        for t in tanks:
+            if not t.active:
+                continue
+            total_current += max(0.0, float(t.current_m3))
+            total_capacity += max(0.0, float(t.capacity_m3))
+        return total_current, total_capacity
+
+    def calc_order_to_fill(self, eca_consumption_t, non_eca_consumption_t):
+        """
+        Возвращает (eca_order_m3, eca_order_t, non_order_m3, non_order_t, warnings_list)
+        Логика: расход уменьшает общий пул активных танков, потом считаем сколько не хватает до их суммарной вместимости.
+        """
+        warnings = []
+
+        eca_density = float(self.eca_density) if float(self.eca_density) > 0 else 1.0
+        non_density = float(self.non_eca_density) if float(self.non_eca_density) > 0 else 1.0
+
+        eca_current, eca_capacity = self._active_totals_m3(self.eca_tanks)
+        non_current, non_capacity = self._active_totals_m3(self.non_eca_tanks)
+
+        eca_used_m3 = float(eca_consumption_t) / eca_density if eca_density else 0.0
+        non_used_m3 = float(non_eca_consumption_t) / non_density if non_density else 0.0
+
+        eca_remaining = eca_current - eca_used_m3
+        non_remaining = non_current - non_used_m3
+
+        # --- ECA deficit
+        if eca_remaining < 0:
+            deficit_m3 = -eca_remaining
+            deficit_t = deficit_m3 * eca_density
+            warnings.append(
+                f"ECA fuel is not enough: deficit {round(deficit_t, 2)} t ({round(deficit_m3, 3)} m³)."
+            )
+            eca_remaining = 0.0
+
+        # --- Non-ECA deficit
+        if non_remaining < 0:
+            deficit_m3 = -non_remaining
+            deficit_t = deficit_m3 * non_density
+            warnings.append(
+                f"Non-ECA fuel is not enough: deficit {round(deficit_t, 2)} t ({round(deficit_m3, 3)} m³)."
+            )
+            non_remaining = 0.0
+
+        eca_order_m3 = max(0.0, eca_capacity - eca_remaining)
+        non_order_m3 = max(0.0, non_capacity - non_remaining)
+
+        eca_order_t = eca_order_m3 * eca_density
+        non_order_t = non_order_m3 * non_density
+
+        return (
+            round(eca_order_m3, 3), round(eca_order_t, 2),
+            round(non_order_m3, 3), round(non_order_t, 2),
+            warnings
+        )
+
+    def update_order_labels_from_current_results(self):
+        # Парсим текущие значения с лейблов (если уже были посчитаны)
+        try:
+            eca_txt = self.eca_result_label.cget("text").split(":")[1].strip()
+            non_txt = self.non_eca_result_label.cget("text").split(":")[1].strip()
+            eca_sum = float(eca_txt)
+            non_sum = float(non_txt)
+        except Exception:
+            eca_sum = 0.0
+            non_sum = 0.0
+
+        self.update_order_labels(eca_sum, non_sum)
+
+    def update_order_labels(self, eca_sum, non_eca_sum):
+        e_m3, e_t, n_m3, n_t, warnings = self.calc_order_to_fill(eca_sum, non_eca_sum)
+
+        self.eca_order_label.config(text=f"ECA order to fill: {e_t} t ({e_m3} m³)")
+        self.non_eca_order_label.config(text=f"Non-ECA order to fill: {n_t} t ({n_m3} m³)")
+
+        if warnings:
+            self.order_warn_label.config(text=" / ".join(warnings))
+        else:
+            self.order_warn_label.config(text="")
+
+
     def edit_view_open(self):
         EditView(self)
+
+    def tanks_view_open(self):
+        TanksView(self)

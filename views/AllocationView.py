@@ -80,19 +80,23 @@ class AllocationView(tk.Toplevel):
         right = ttk.Frame(frame)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
-        pcols = ("tank", "used_m3", "used_t", "rem_m3")
+        pcols = ("tank", "used_m3", "used_t", "rem_m3", "rem_t")
         preview = ttk.Treeview(right, columns=pcols, show="headings", height=10)
         preview.heading("tank", text="Tank")
         preview.heading("used_m3", text="Consume m³")
         preview.heading("used_t", text="Consume t")
         preview.heading("rem_m3", text="Remaining m³")
+        preview.heading("rem_t", text="Remaining t")
+
         preview.column("tank", width=140)
         preview.column("used_m3", width=95, anchor="center")
         preview.column("used_t", width=80, anchor="center")
         preview.column("rem_m3", width=105, anchor="center")
+        preview.column("rem_t", width=95, anchor="center")
+
         preview.pack(fill=tk.BOTH, expand=True)
 
-        deficit_label = ttk.Label(right, text="")
+        deficit_label = ttk.Label(right, text="", foreground="red")
         deficit_label.pack(anchor="w", pady=(6, 0))
 
         # save refs
@@ -175,8 +179,10 @@ class AllocationView(tk.Toplevel):
 
         for i, row in enumerate(preview):
             t = row["tank"]
+            density = self.parent.eca_density if which == "eca" else self.parent.non_eca_density
+            rem_t = round(float(row["remaining_m3"]) * float(density), 2) if float(density) > 0 else 0.0
             tree.insert("", "end", iid=str(i), values=(
-                t.name, row["used_m3"], row["used_t"], row["remaining_m3"]
+                t.name, row["used_m3"], row["used_t"], row["remaining_m3"], rem_t
             ))
 
         if def_m3 > 0:
@@ -196,5 +202,6 @@ class AllocationView(tk.Toplevel):
 
         # обновляем order to fill по текущим итогам расхода (как было)
         self.parent.update_order_labels(self.eca_consumption_t, self.non_eca_consumption_t)
+        self.parent.update_active_rob_after_route_labels()
 
         self.destroy()

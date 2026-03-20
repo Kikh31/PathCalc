@@ -285,5 +285,6 @@ class TanksView(tk.Toplevel):
 
         self.parent.save_tanks_data()
         self.parent.update_order_labels_from_current_results()
+        self.parent.update_active_rob_after_route_labels()
 
         self.destroy()

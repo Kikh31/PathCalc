@@ -73,6 +73,8 @@ class MainView(tk.Frame):
 
         self.eca_density = 1.0
         self.non_eca_density = 1.0
+        self.last_eca_consumption_t = 0.0
+        self.last_non_eca_consumption_t = 0.0
         self.eca_tanks = []
         self.non_eca_tanks = []
         self.load_tanks_data()
@@ -83,6 +85,7 @@ class MainView(tk.Frame):
         self.eca_result_label.config(text="ECA consumption: 0.0 t (0.0 m³)")
         self.non_eca_result_label.config(text="Non ECA consumption: 0.0 t (0.0 m³)")
         self.update_order_labels(0.0, 0.0)
+        self.update_active_rob_after_route_labels()
 
         self.pack()
 
@@ -186,6 +189,12 @@ class MainView(tk.Frame):
         self.non_eca_order_label = ttk.Label(self.result_frame, text="Non-ECA order to fill: 0 t (0 m³)")
         self.non_eca_order_label.pack()
 
+        self.eca_rob_label = ttk.Label(self.result_frame, text="Active ECA ROB: 0.0 t (0.0 m³)")
+        self.eca_rob_label.pack(pady=(12, 0))
+
+        self.non_eca_rob_label = ttk.Label(self.result_frame, text="Active Non-ECA ROB: 0.0 t (0.0 m³)")
+        self.non_eca_rob_label.pack()
+
         self.order_warn_label = ttk.Label(self.result_frame, text="")
         self.order_warn_label.pack(pady=(6, 0))
 
@@ -219,6 +228,32 @@ class MainView(tk.Frame):
                                      segment.is_eca,
                                      segment.loading,
                                      segment.consumption))
+
+        eca_sum = 0.0
+        non_eca_sum = 0.0
+        for seg in self.path_segments:
+            if seg.is_eca:
+                eca_sum += seg.consumption
+            else:
+                non_eca_sum += seg.consumption
+
+        self.last_eca_consumption_t = float(eca_sum)
+        self.last_non_eca_consumption_t = float(non_eca_sum)
+
+        eca_m3 = round(eca_sum / self.eca_density, 3) if self.eca_density > 0 else 0.0
+        non_m3 = round(non_eca_sum / self.non_eca_density, 3) if self.non_eca_density > 0 else 0.0
+
+        self.eca_result_label.config(text=f"ECA consumption: {round(eca_sum, 2)} t ({eca_m3} m³)")
+        self.non_eca_result_label.config(text=f"Non ECA consumption: {round(non_eca_sum, 2)} t ({non_m3} m³)")
+
+        self.update_order_labels(eca_sum, non_eca_sum)
+        self.update_active_rob_after_route_labels()
+
+        # Allocate: включаем только если есть расход
+        if len(self.path_segments) > 0 and (eca_sum > 0 or non_eca_sum > 0):
+            self.allocate_button.config(state=tk.ACTIVE)
+        else:
+            self.allocate_button.config(state=tk.DISABLED)
 
     def item_selected(self, event):
         selected_item = self.tree.selection()
@@ -263,6 +298,9 @@ class MainView(tk.Frame):
             elif not i.is_eca:
                 non_eca_sum += i.consumption
 
+        self.last_eca_consumption_t = float(eca_sum)
+        self.last_non_eca_consumption_t = float(non_eca_sum)
+
         eca_m3 = round(eca_sum / self.eca_density, 3) if self.eca_density > 0 else 0.0
         non_m3 = round(non_eca_sum / self.non_eca_density, 3) if self.non_eca_density > 0 else 0.0
 
@@ -270,6 +308,7 @@ class MainView(tk.Frame):
         self.non_eca_result_label.config(text=f"Non ECA consumption: {round(non_eca_sum, 2)} t ({non_m3} m³)")
 
         self.update_order_labels(eca_sum, non_eca_sum)
+        self.update_active_rob_after_route_labels()
         self.allocate_button.config(state=tk.ACTIVE)
 
 
@@ -294,10 +333,17 @@ class MainView(tk.Frame):
             elif not i.is_eca:
                 non_eca_sum += i.consumption
 
-        self.eca_result_label.config(text=f"ECA consumption: {eca_sum}")
-        self.non_eca_result_label.config(text=f"Non ECA consumption: {non_eca_sum}")
+        self.last_eca_consumption_t = float(eca_sum)
+        self.last_non_eca_consumption_t = float(non_eca_sum)
+
+        eca_m3 = round(eca_sum / self.eca_density, 3) if self.eca_density > 0 else 0.0
+        non_m3 = round(non_eca_sum / self.non_eca_density, 3) if self.non_eca_density > 0 else 0.0
+
+        self.eca_result_label.config(text=f"ECA consumption: {round(eca_sum, 2)} t ({eca_m3} m³)")
+        self.non_eca_result_label.config(text=f"Non ECA consumption: {round(non_eca_sum, 2)} t ({non_m3} m³)")
 
         self.update_order_labels(eca_sum, non_eca_sum)
+        self.update_active_rob_after_route_labels()
         self.allocate_button.config(state=tk.ACTIVE)
 
 
@@ -474,9 +520,9 @@ class MainView(tk.Frame):
         self.non_eca_order_label.config(text=f"Non-ECA order to fill: {n_t} t ({n_m3} m³)")
 
         if warnings:
-            self.order_warn_label.config(text=" / ".join(warnings))
+            self.order_warn_label.config(text=" / ".join(warnings), foreground="red")
         else:
-            self.order_warn_label.config(text="")
+            self.order_warn_label.config(text="", foreground="black")
 
 
     def edit_view_open(self):
@@ -534,3 +580,42 @@ class MainView(tk.Frame):
             non_sum = 0.0
 
         AllocationView(self, eca_sum, non_sum)
+
+    def update_active_rob_after_route_labels(self):
+        eca_cur_m3, _ = self._active_totals_m3(self.eca_tanks)
+        non_cur_m3, _ = self._active_totals_m3(self.non_eca_tanks)
+
+        eca_d = float(self.eca_density) if float(self.eca_density) > 0 else 1.0
+        non_d = float(self.non_eca_density) if float(self.non_eca_density) > 0 else 1.0
+
+        # расход в m3 по маршруту
+        eca_used_m3 = (float(self.last_eca_consumption_t) / eca_d) if eca_d > 0 else 0.0
+        non_used_m3 = (float(self.last_non_eca_consumption_t) / non_d) if non_d > 0 else 0.0
+
+        eca_rem_m3 = eca_cur_m3 - eca_used_m3
+        non_rem_m3 = non_cur_m3 - non_used_m3
+
+        # если ушли в минус — показываем 0, но можно подсветить дефицит красным
+        eca_def_m3 = max(0.0, -eca_rem_m3)
+        non_def_m3 = max(0.0, -non_rem_m3)
+
+        eca_rem_m3 = max(0.0, eca_rem_m3)
+        non_rem_m3 = max(0.0, non_rem_m3)
+
+        eca_rem_t = round(eca_rem_m3 * eca_d, 2)
+        non_rem_t = round(non_rem_m3 * non_d, 2)
+
+        self.eca_rob_label.config(text=f"Active ECA remaining after route: {eca_rem_t} t ({round(eca_rem_m3, 3)} m³)")
+        self.non_eca_rob_label.config(
+            text=f"Active Non-ECA remaining after route: {non_rem_t} t ({round(non_rem_m3, 3)} m³)")
+
+        # если есть дефицит — делаем эти строки красными, иначе обычными
+        if eca_def_m3 > 0:
+            self.eca_rob_label.config(foreground="red")
+        else:
+            self.eca_rob_label.config(foreground="black")
+
+        if non_def_m3 > 0:
+            self.non_eca_rob_label.config(foreground="red")
+        else:
+            self.non_eca_rob_label.config(foreground="black")
